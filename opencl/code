@@ -10,3 +10,20 @@ print(f"textin_array_size: {textin_array_size}")
 print(f"trace_array_size: {trace_array_size}")
 print(f"bestguess_buf_size: {bestguess_buf_size}")
 print(f"cparefs_buf_size: {cparefs_buf_size}")
+
+import pyopencl as cl
+
+# Get platforms
+platforms = cl.get_platforms()
+
+# Get devices for the first platform
+devices = platforms[0].get_devices()
+
+# Select the first device
+device = devices[0]
+
+# Get the max memory allocation size
+max_mem_alloc_size = device.get_info(cl.device_info.MAX_MEM_ALLOC_SIZE)
+
+print(f"Device name: {device.name}")
+print(f"Max memory allocation size: {max_mem_alloc_size}")
