@@ -1,2 +1,12 @@
 max_mem_alloc_size = device.get_info(cl.device_info.MAX_MEM_ALLOC_SIZE)
 print(f"Max memory allocation size: {max_mem_alloc_size}")
+
+textin_array_size = textin_array.nbytes
+trace_array_size = trace_array.nbytes
+bestguess_buf_size = 16 * np.dtype(np.uint8).itemsize
+cparefs_buf_size = 16 * np.dtype(np.float32).itemsize
+
+print(f"textin_array_size: {textin_array_size}")
+print(f"trace_array_size: {trace_array_size}")
+print(f"bestguess_buf_size: {bestguess_buf_size}")
+print(f"cparefs_buf_size: {cparefs_buf_size}")
