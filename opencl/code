@@ -1,0 +1,2 @@
+max_mem_alloc_size = device.get_info(cl.device_info.MAX_MEM_ALLOC_SIZE)
+print(f"Max memory allocation size: {max_mem_alloc_size}")
