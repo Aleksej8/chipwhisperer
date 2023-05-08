@@ -27,3 +27,16 @@ max_mem_alloc_size = device.get_info(cl.device_info.MAX_MEM_ALLOC_SIZE)
 
 print(f"Device name: {device.name}")
 print(f"Max memory allocation size: {max_mem_alloc_size}")
+
+
+# Liste aller verfügbaren Geräte
+platforms = cl.get_platforms()
+devices = []
+for platform in platforms:
+    devices.extend(platform.get_devices())
+
+# Wählen Sie ein Gerät aus, z.B. das erste in der Liste
+selected_device = devices[0]
+
+# Erstellen Sie einen Kontext für das ausgewählte Gerät
+ctx = cl.Context([selected_device])
