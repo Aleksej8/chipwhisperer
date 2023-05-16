@@ -81,7 +81,7 @@ __kernel void attack(__global uchar* textin_array, __global double* trace_array,
             
         float hws_bar = mean(hws, num_text_inputs);
         float o_hws = std_dev(hws, hws_bar, num_text_inputs);
-        
+        printf("hws_bar: = %f\t", hws[0]);
         for (int j = 0; j < 5000; j++) {
             double sum = 0;
             for (int i = 0; i < num_text_inputs; i++) {
