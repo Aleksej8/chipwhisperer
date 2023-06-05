@@ -1,216 +1,281 @@
-#include <CL/cl.h>
 #include <stdio.h>
 #include <stdlib.h>
-#include <time.h>
+#include <CL/cl.h>
+
+#include <stdint.h>
 
 #define MAX_SOURCE_SIZE (0x100000)
-#define NUM_CHUNK_SIZES 7
-#define NUM_SUBKEYS 16
-const char *kernel_source = R"(
-__constant uchar sbox[] = {
-    0x63,0x7c,0x77,0x7b,0xf2,0x6b,0x6f,0xc5,0x30,0x01,0x67,0x2b,0xfe,0xd7,0xab,0x76,
-    0xca,0x82,0xc9,0x7d,0xfa,0x59,0x47,0xf0,0xad,0xd4,0xa2,0xaf,0x9c,0xa4,0x72,0xc0,
-    0xb7,0xfd,0x93,0x26,0x36,0x3f,0xf7,0xcc,0x34,0xa5,0xe5,0xf1,0x71,0xd8,0x31,0x15,
-    0x04,0xc7,0x23,0xc3,0x18,0x96,0x05,0x9a,0x07,0x12,0x80,0xe2,0xeb,0x27,0xb2,0x75,
-    0x09,0x83,0x2c,0x1a,0x1b,0x6e,0x5a,0xa0,0x52,0x3b,0xd6,0xb3,0x29,0xe3,0x2f,0x84,
-    0x53,0xd1,0x00,0xed,0x20,0xfc,0xb1,0x5b,0x6a,0xcb,0xbe,0x39,0x4a,0x4c,0x58,0xcf,
-    0xd0,0xef,0xaa,0xfb,0x43,0x4d,0x33,0x85,0x45,0xf9,0x02,0x7f,0x50,0x3c,0x9f,0xa8,
-    0x51,0xa3,0x40,0x8f,0x92,0x9d,0x38,0xf5,0xbc,0xb6,0xda,0x21,0x10,0xff,0xf3,0xd2,
-    0xcd,0x0c,0x13,0xec,0x5f,0x97,0x44,0x17,0xc4,0xa7,0x7e,0x3d,0x64,0x5d,0x19,0x73,
-    0x60,0x81,0x4f,0xdc,0x22,0x2a,0x90,0x88,0x46,0xee,0xb8,0x14,0xde,0x5e,0x0b,0xdb,
-    0xe0,0x32,0x3a,0x0a,0x49,0x06,0x24,0x5c,0xc2,0xd3,0xac,0x62,0x91,0x95,0xe4,0x79,
-    0xe7,0xc8,0x37,0x6d,0x8d,0xd5,0x4e,0xa9,0x6c,0x56,0xf4,0xea,0x65,0x7a,0xae,0x08,
-    0xba,0x78,0x25,0x2e,0x1c,0xa6,0xb4,0xc6,0xe8,0xdd,0x74,0x1f,0x4b,0xbd,0x8b,0x8a, 
-    0x70,0x3e,0xb5,0x66,0x48,0x03,0xf6,0x0e,0x61,0x35,0x57,0xb9,0x86,0xc1,0x1d,0x9e, 
-    0xe1,0xf8,0x98,0x11,0x69,0xd9,0x8e,0x94,0x9b,0x1e,0x87,0xe9,0xce,0x55,0x28,0xdf, 
-    0x8c,0xa1,0x89,0x0d,0xbf,0xe6,0x42,0x68,0x41,0x99,0x2d,0x0f,0xb0,0x54,0xbb,0x16  
-};
-
-uint my_popcount(uint x) {
-    uint count;
-    for (count = 0; x; count++) {
-        x &= x - 1;
-    }
-    return count;
-}
-
-float mean(float* X, int len) {
-    float sum = 0;
-    for (int i = 0; i < len; i++) {
-        sum += X[i];
-    }
-    return sum / len;
-}
-
-float std_dev(float* X, float X_bar, int len) {
-    float sum = 0;
-    for (int i = 0; i < len; i++) {
-        sum += (X[i] - X_bar) * (X[i] - X_bar);
-    }
-    return sqrt(sum); 
-}
+#define TRACE_ROWS 50
+#define TRACE_COLS 5000
+#define CHUNK_SIZE 1000
 
 
-__kernel void attack(__global uchar* textin_array, __global float* trace_array, int trace_array_len, __global uchar* bestguess, __global float* cparefs)  {
-    int bnum = get_global_id(0);
-    int num_text_inputs = trace_array_len;
-    float t_bar = 0.0, o_t = 0.0;
-    float maxcpa = 0;
-    uchar key_byte_guess = 0;
-    float hws[50];
-    float max_correlation = -1.0; 
-    float correlation_array[TRACE_LENGTH];
-    float o_t_array[TRACE_LENGTH];
-    float t_bar_array[TRACE_LENGTH];
-    
-    // calc t_bar
-    for (int j = 0; j < TRACE_LENGTH; j++) {
-        float sum = 0;
-        for (int i = 0; i < num_text_inputs; i++) {
-            sum += trace_array[i * TRACE_LENGTH + j];
-        }
-        t_bar_array[j] = sum / num_text_inputs;
-    }
-    
-    // calc o_t
-    for (int j = 0; j < TRACE_LENGTH; j++) {
-        float sum = 0;
-        for (int i = 0; i < num_text_inputs; i++) {
-            float diff = trace_array[i * TRACE_LENGTH + j] - t_bar_array[j];
-            sum += diff * diff;
-        }
-        o_t_array[j] = sqrt(sum);
-    }
-    
-    for (int kguess = 0; kguess < 256; kguess++) { 
-        for (int i = 0; i < num_text_inputs; i++) {
-                hws[i] = my_popcount(sbox[textin_array[i * 16 + bnum] ^ kguess]);
-            }
-            
-        float hws_bar = mean(hws, num_text_inputs);
-        float o_hws = std_dev(hws, hws_bar, num_text_inputs);
-        
-        for (int j = 0; j < TRACE_LENGTH; j++) {
-            float sum = 0;
-            for (int i = 0; i < num_text_inputs; i++) {
-                float trace_diff = trace_array[i * TRACE_LENGTH + j] - t_bar_array[j];
-                float hws_diff = hws[i] - hws_bar;
-                sum += trace_diff * hws_diff;
-            }
-            correlation_array[j] = sum / (o_t_array[j] * o_hws);
-            float correlation = fabs(correlation_array[j]);
-            if (correlation > max_correlation) {
-                max_correlation = correlation;
-                key_byte_guess = kguess;
-            }
-        }
-    }
-    // Save the best guess and its correlation value in the output buffers
-    bestguess[bnum] = key_byte_guess;
-    cparefs[bnum] = max_correlation;
 
-)";
 int main() {
-	FILE* file = fopen("trace_array.txt", "r");
-	if (file == NULL) {
-		printf("Cannot open file\n");
-		exit(0);
-	}
+    // Initialisierung von OpenCL
+    cl_uint num_platforms = 0;
+    cl_platform_id platform = NULL;
+    cl_device_id device = NULL;
+    cl_int status = clGetPlatformIDs(0, NULL, &num_platforms);
 
-	int count = 0;
-	float value;
-
-	while (fscanf(file, "%f", &value) != EOF) {
-		// Hier sollten Sie den gelesenen Wert irgendwo speichern
-		// Zum Beispiel in einem Array, das groß genug ist, um alle Werte zu speichern.
-		data[count] = value;
-		count++;
-	}
-
-	fclose(file);
-
-    cl_platform_id platform_id = NULL;
-    cl_device_id device_id = NULL;
-    cl_uint ret_num_devices;
-    cl_uint ret_num_platforms;
-    cl_int ret = clGetPlatformIDs(1, &platform_id, &ret_num_platforms);
-    ret = clGetDeviceIDs(platform_id, CL_DEVICE_TYPE_DEFAULT, 1, &device_id, &ret_num_devices);
-
-    cl_context context = clCreateContext(NULL, 1, &device_id, NULL, NULL, &ret);
-
-    cl_command_queue command_queue = clCreateCommandQueue(context, device_id, 0, &ret);
-
-    cl_mem textin_array_mem_obj = clCreateBuffer(context, CL_MEM_READ_ONLY, sizeof(cl_uint) * TEXTIN_SIZE, NULL, &ret);
-    cl_mem bestguess_mem_obj = clCreateBuffer(context, CL_MEM_WRITE_ONLY, sizeof(cl_uint) * NUM_SUBKEYS, NULL, &ret);
-    cl_mem cparefs_mem_obj = clCreateBuffer(context, CL_MEM_WRITE_ONLY, sizeof(cl_float) * NUM_SUBKEYS, NULL, &ret);
-
-    // Laden und Bauen des OpenCL-Programms 
-   
-    cl_program program = clCreateProgramWithSource(context, 1, (const char **)&kernel_source, NULL, &ret);
-    ret = clBuildProgram(program, 1, &device_id, NULL, NULL, NULL);
-    
-    // Erstellen des OpenCL-Kernels
-    cl_kernel kernel = clCreateKernel(program, "attack", &ret);
-	
-    int chunk_sizes[NUM_CHUNK_SIZES] = {10, 50, 100, 500, 1000, 2500, 5000};
-    float execution_times[NUM_CHUNK_SIZES];
-    
-    for (int i = 0; i < NUM_CHUNK_SIZES; ++i) {
-        int chunk_size = chunk_sizes[i];
-        printf("Processing chunk size %d\n", chunk_size);
-
-		// Überprüfen der Teilbarkeit
-        if (count % chunk_size != 0) {
-            printf("The number of columns in trace_array must be divisible by the chunk size.");
-            exit(1);
-        }
-
-        clock_t start_time = clock();
-
-        for (int chunk_index = 0; chunk_index < num_trace_array_chunks; ++chunk_index) {
-            cl_mem trace_array_chunk_mem_obj = clCreateBuffer(context, CL_MEM_READ_ONLY, sizeof(cl_float) * chunk_size, NULL, &ret);
-
-             // Aufteilen von trace_array
-            float* trace_array_chunk = data + chunk_index * chunk_size;
-
-            cl_mem trace_array_chunk_mem_obj = clCreateBuffer(context, CL_MEM_READ_ONLY, sizeof(cl_float) * chunk_size, trace_array_chunk, &ret);
-
-            // Ausführen des OpenCL-Kernels
-            ret = clSetKernelArg(kernel, 0, sizeof(cl_mem), (void *)&textin_array_mem_obj);
-            ret = clSetKernelArg(kernel, 1, sizeof(cl_mem), (void *)&trace_array_chunk_mem_obj);
-            // Setzen Sie hier die restlichen Kernel-Argumente
-            size_t global_item_size = chunk_size;
-            size_t local_item_size = 1;
-            ret = clEnqueueNDRangeKernel(command_queue, kernel, 1, NULL, &global_item_size, &local_item_size, 0, NULL, NULL);
-
-            // Abrufen der Ergebnisse
-            cl_uint* bestguess = (cl_uint*)malloc(sizeof(cl_uint) * NUM_SUBKEYS);
-            cl_float* cparefs = (cl_float*)malloc(sizeof(cl_float) * NUM_SUBKEYS);
-            ret = clEnqueueReadBuffer(command_queue, bestguess_mem_obj, CL_TRUE, 0, sizeof(cl_uint) * NUM_SUBKEYS, bestguess, 0, NULL, NULL);
-            ret = clEnqueueReadBuffer(command_queue, cparefs_mem_obj, CL_TRUE, 0, sizeof(cl_float) * NUM_SUBKEYS, cparefs, 0, NULL, NULL);
-
-			// Verarbeiten Sie hier die Ergebnisse
-            // ...
-            clReleaseMemObject(trace_array_chunk_mem_obj);
-			
-			free(bestguess);
-            free(cparefs);
-        }
-
-        clock_t end_time = clock();
-        execution_times[i] = ((float) (end_time - start_time)) / CLOCKS_PER_SEC;
-
-        // Code zum Bestimmen der besten Indices und Werte fehlt hier
+    if (status != CL_SUCCESS) {
+        printf("Fehler: Konnte Anzahl der verfügbaren OpenCL-Plattformen nicht abrufen.\n");
+        exit(EXIT_FAILURE);
     }
+
+    if (num_platforms > 0) {
+        cl_platform_id* platforms = (cl_platform_id*)malloc(num_platforms * sizeof(cl_platform_id));
+        status = clGetPlatformIDs(num_platforms, platforms, NULL);
+
+        // Nehmen Sie die erste verfügbare Plattform
+        platform = platforms[0];
+        free(platforms);
+    }
+
+    cl_context_properties properties[3];
+    cl_context context;
+    cl_command_queue command_queue;
+
+    // Laden der NPY-Datei
+    const char* npy_file_path = "C:/Users/Chris Funk/Studium/sem6/Projekt/textin_array.npy";
+    FILE* textin_array;
+    if (fopen_s(&textin_array, npy_file_path, "rb") != 0) {
+        printf("Fehler: Konnte textin NPY-Datei nicht öffnen.\n");
+        return 1;
+    }
+
+    // Laden der NPY-Datei für trace_array
+    const char* npy_file_path3 = "C:/Users/Chris Funk/Studium/sem6/Projekt/trace_array.npy";
+    FILE* trace_array;
+    if (fopen_s(&trace_array, npy_file_path3, "rb") != 0) {
+        printf("Fehler: Konnte trace_array NPY-Datei nicht öffnen.\n");
+        return 1;
+    }
+
+
+    // Lesen Sie die ersten 6 Bytes des Headers und stellen Sie sicher, dass sie die magische Nummer enthalten
+    char magic_number[6];
+    fread(magic_number, sizeof(char), 6, textin_array);
+    if (strncmp(magic_number, "\x93NUMPY", 6) != 0) {
+        printf("Fehler: Ungültiges NPY-Dateiformat.\n");
+        fclose(textin_array);
+        exit(EXIT_FAILURE);
+    }
+
+    // Lesen Sie die nächsten 2 Bytes des Headers, die die Version der NPY-Datei enthalten
+    char version[2];
+    fread(version, sizeof(char), 2, textin_array);
+
+    // Lesen Sie die nächsten 2 Bytes des Headers, die die Länge des verbleibenden Headers enthalten
+    uint16_t header_length;
+    fread(&header_length, sizeof(uint16_t), 1, textin_array);
+
+    // Lesen Sie den Rest des Headers
+    char* header = (char*)malloc(header_length * sizeof(char));
+    fread(header, sizeof(char), header_length, textin_array);
+
+    // Jetzt können Sie den Header-String ausgeben, um zu sehen, was er enthält
+    printf("Header: %s\n", header);
+
+    free(header);
+
+    uint8_t data[50][16];
+
+    // Jetzt, wo wir den Header gelesen haben, können wir das eigentliche Datenarray lesen.
+    for (int i = 0; i < 50; ++i) {
+        for (int j = 0; j < 16; ++j) {
+            fread(&data[i][j], sizeof(uint8_t), 1, textin_array);
+        }
+    }
+
+    fclose(textin_array);
+
+    // Lesen Sie die ersten 6 Bytes des Headers und stellen Sie sicher, dass sie die magische Nummer enthalten
+    char magic_number2[6];
+    fread(magic_number2, sizeof(char), 6, trace_array);
+    if (strncmp(magic_number2, "\x93NUMPY", 6) != 0) {
+        printf("Fehler: Ungültiges NPY-Dateiformat.\n");
+        fclose(trace_array);
+        exit(EXIT_FAILURE);
+    }
+
+    // Lesen Sie die nächsten 2 Bytes des Headers, die die Version der NPY-Datei enthalten
+    char version2[2];
+    fread(version2, sizeof(char), 2, trace_array);
+
+    // Lesen Sie die nächsten 2 Bytes des Headers, die die Länge des verbleibenden Headers enthalten
+    uint16_t header_length2;
+    fread(&header_length2, sizeof(uint16_t), 1, trace_array);
+
+    // Lesen Sie den Rest des Headers
+    char* header2 = (char*)malloc(header_length2 * sizeof(char));
+    fread(header2, sizeof(char), header_length2, trace_array);
+
+    // Jetzt können Sie den Header-String ausgeben, um zu sehen, was er enthält
+    printf("Header: %s\n", header2);
+
+    free(header2);
+
+    
+
+    double(*trace_data_double)[TRACE_COLS] = malloc(sizeof(double[TRACE_ROWS][TRACE_COLS]));
+    float(*trace_data_float)[TRACE_COLS] = malloc(sizeof(float[TRACE_ROWS][TRACE_COLS]));
+
+    // Jetzt, wo wir den Header gelesen haben, können wir das eigentliche Datenarray lesen.
+    for (int i = 0; i < 50; ++i) {
+        fread(trace_data_double[i], sizeof(double), 5000, trace_array);
+
+        // Umwandeln in float
+        for (int j = 0; j < 5000; ++j) {
+            trace_data_float[i][j] = (float)trace_data_double[i][j];
+        }
+    }
+
+    fclose(trace_array);
+
+  
+    
+    
+    properties[0] = CL_CONTEXT_PLATFORM;
+    properties[1] = (cl_context_properties)platform;
+    properties[2] = 0;
+
+    status = clGetDeviceIDs(platform, CL_DEVICE_TYPE_DEFAULT, 1, &device, NULL);
+    if (status != CL_SUCCESS) {
+        printf("Fehler: Konnte OpenCL-Gerät nicht abrufen.\n");
+        exit(EXIT_FAILURE);
+    }
+
+    context = clCreateContext(properties, 1, &device, NULL, NULL, &status);
+    command_queue = clCreateCommandQueue(context, device, 0, &status);
+
+    // Laden und Kompilieren des OpenCL-Kernels
+    
+    const char* kernel_file_path = "C:/Users/Chris Funk/Studium/sem6/Projekt/kernel.cl";
+    FILE* kernel_file;
+    if (fopen_s(&kernel_file, kernel_file_path, "r") != 0) {
+        printf("Fehler: Konnte kernel datei nicht öffnen.\n");
+        return 1;
+    }
+   
+
+    char* kernel_source = (char*)malloc(MAX_SOURCE_SIZE);
+    size_t kernel_size = fread(kernel_source, 1, MAX_SOURCE_SIZE, kernel_file);
+
+    fclose(kernel_file);
+
+    int TRACE_LENGTH = 100; // Setzen Sie den gewünschten Wert
+    int TRACE_COUNT = 50; // Setzen Sie den gewünschten Wert
+
+    char build_options[100];
+    sprintf_s(build_options, sizeof(build_options), "-D TRACE_LENGTH=%d -D TRACE_COUNT=%d", TRACE_LENGTH, TRACE_COUNT);
+
+
+
+    cl_program program = clCreateProgramWithSource(context, 1, (const char**)&kernel_source, (const size_t*)&kernel_size, &status);
+    status = clBuildProgram(program, 1, &device, build_options, NULL, NULL);
+
+    // Überprüfen Sie den Kompilierungsstatus und zeigen Sie etwaige Fehler an
+    if (status != CL_SUCCESS) {
+        cl_int build_status;
+        clGetProgramBuildInfo(program, device, CL_PROGRAM_BUILD_STATUS, sizeof(cl_int), &build_status, NULL);
+        if (build_status != CL_SUCCESS) {
+            size_t log_size;
+            clGetProgramBuildInfo(program, device, CL_PROGRAM_BUILD_LOG, 0, NULL, &log_size);
+            char* log = (char*)malloc(log_size);
+            clGetProgramBuildInfo(program, device, CL_PROGRAM_BUILD_LOG, log_size, log, NULL);
+            printf("Fehler beim Kompilieren des OpenCL-Kernels:\n%s\n", log);
+            free(log);
+        }
+    }
+
+    // Jetzt erstellen wir das "calculate_hws"-Kernel
+    cl_kernel kernel = clCreateKernel(program, "calculate_hws", &status);
+
+    // Jetzt erstellen wir das "attack"-Kernel
+    cl_kernel attack_kernel = clCreateKernel(program, "attack", &status);
+    int numsubkeys = 16;
+    
+    // Erstellen Sie die Buffer für trace_array, bestguess und cparefs
+    cl_mem trace_array_buf = clCreateBuffer(context, CL_MEM_READ_ONLY | CL_MEM_COPY_HOST_PTR, 50  *5000* sizeof(float), trace_data_float, &status);
+    
+    cl_mem textin_array_buf = clCreateBuffer(context, CL_MEM_READ_ONLY | CL_MEM_COPY_HOST_PTR, 50 * numsubkeys * sizeof(float), data, &status);
+    cl_mem bestguess_buf = clCreateBuffer(context, CL_MEM_WRITE_ONLY, numsubkeys * sizeof(uint8_t), NULL, &status);
+    cl_mem cparefs_buf = clCreateBuffer(context, CL_MEM_WRITE_ONLY, numsubkeys * sizeof(float), NULL, &status);
+    cl_mem hws_array_buf = clCreateBuffer(context, CL_MEM_WRITE_ONLY, TRACE_COUNT * sizeof(float) * 256 * numsubkeys, NULL, &status);
+
+    // Setzen Sie die Argumente des Kernels
+    status = clSetKernelArg(kernel, 0, sizeof(cl_mem), (void*)&textin_array_buf);
+    status |= clSetKernelArg(kernel, 1, sizeof(cl_mem), (void*)&hws_array_buf);
+    if (status != CL_SUCCESS) {
+        printf("Fehler: Konnte die Kernel-Argumente nicht setzen. Status: %d\n", status);
+        exit(EXIT_FAILURE);
+    }
+    // Setzen Sie die Argumente des attack-Kernels
+    status = clSetKernelArg(attack_kernel, 0, sizeof(cl_mem), (void*)&textin_array_buf);
+    status |= clSetKernelArg(attack_kernel, 1, sizeof(cl_mem), (void*)&trace_array_buf);
+    status |= clSetKernelArg(attack_kernel, 2, sizeof(cl_mem), (void*)&bestguess_buf);
+    status |= clSetKernelArg(attack_kernel, 3, sizeof(cl_mem), (void*)&cparefs_buf);
+    status |= clSetKernelArg(attack_kernel, 4, sizeof(cl_mem), (void*)&hws_array_buf);
+
+    // Starten Sie die Ausführung des Kernels
+    size_t global_size = numsubkeys;
+    status = clEnqueueNDRangeKernel(command_queue, kernel, 1, NULL, &global_size, NULL, 0, NULL, NULL);
+    if (status != CL_SUCCESS) {
+        printf("Fehler: hw calc Kernel konnte nicht ausgeführt werden. Status: %d\n", status);
+        exit(EXIT_FAILURE);
+    }
+    clFlush(command_queue);
+    clFinish(command_queue);
+    // Starten Sie die Ausführung des attack-Kernels
+    status = clEnqueueNDRangeKernel(command_queue, attack_kernel, 1, NULL, &global_size, NULL, 0, NULL, NULL);
+    if (status != CL_SUCCESS) {
+        printf("Fehler: atack Kernel konnte nicht ausgeführt werden. Status: %d\n", status);
+        exit(EXIT_FAILURE);
+    }
+    clFlush(command_queue);
+    clFinish(command_queue);
+    // Ergebnisse vom OpenCL-Gerät abrufen
+    float* hws_array = (float*)malloc(TRACE_COUNT * sizeof(float) * 256 * numsubkeys);
+    status = clEnqueueReadBuffer(command_queue, hws_array_buf, CL_TRUE, 0, TRACE_COUNT * sizeof(float) * 256 * numsubkeys, hws_array, 0, NULL, NULL);
+
+    // Ergebnisse vom OpenCL-Gerät abrufen
+    uint8_t* bestguess = (uint8_t*)malloc(numsubkeys * sizeof(uint8_t));
+    status = clEnqueueReadBuffer(command_queue, bestguess_buf, CL_TRUE, 0, numsubkeys * sizeof(uint8_t), bestguess, 0, NULL, NULL);
+
+    float* cparefs = (float*)malloc(numsubkeys * sizeof(float));
+    status = clEnqueueReadBuffer(command_queue, cparefs_buf, CL_TRUE, 0, numsubkeys * sizeof(float), cparefs, 0, NULL, NULL);
+
+    printf("Best Key Guess: ");
+    for (int i = 0; i < numsubkeys; i++) {
+        printf("%02x ", bestguess[i]);
+    }
+    printf("\n");
+
+    printf("[");
+    for (int i = 0; i < numsubkeys; i++) {
+        if (i != numsubkeys - 1) {
+            printf("%.6f, ", cparefs[i]);
+        }
+        else {
+            printf("%.6f", cparefs[i]);
+        }
+    }
+    printf("]\n");
 
     // Aufräumen
-    ret = clFlush(command_queue);
-    ret = clFinish(command_queue);
-    ret = clReleaseCommandQueue(command_queue);
-    ret = clReleaseContext(context);
-	
-	free(source_str);
-    free(data);
-
+    free(trace_data_double);
+    free(trace_data_float);
+    free(kernel_source);
+    free(bestguess);
+    free(cparefs);
+    clReleaseMemObject(textin_array_buf);
+    clReleaseMemObject(trace_array_buf);  
+    clReleaseMemObject(bestguess_buf);
+    clReleaseMemObject(cparefs_buf);
+    clReleaseMemObject(hws_array_buf);
+    clReleaseCommandQueue(command_queue);
+    clReleaseContext(context);
+    printf("Programm beendet.\n");
     return 0;
 }
